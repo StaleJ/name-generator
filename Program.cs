@@ -1,5 +1,6 @@
 using Bogus;
 using Bogus.DataSets;
+using System.Text.Json;
 
 int age;
 while (true)
@@ -77,3 +78,52 @@ Console.WriteLine($"Fornavn:       {firstName}");
 Console.WriteLine($"Etternavn:     {lastName}");
 Console.WriteLine($"Personnummer:  {personnummer}");
 Console.WriteLine($"Telefon:       {phone}");
+
+Console.Write("\nBankID preprod aktivering? (j/n): ");
+if (Console.ReadLine()?.Trim().ToLowerInvariant() == "j")
+{
+    using var http = new HttpClient();
+    http.DefaultRequestHeaders.Add("accept", "application/json");
+    http.DefaultRequestHeaders.Add("origin", "https://ra-preprod.bankidnorge.no");
+    http.DefaultRequestHeaders.Add("referer", "https://ra-preprod.bankidnorge.no/");
+
+    var body = JsonSerializer.Serialize(new
+    {
+        commonName = $"{lastName}, {firstName}",
+        bankIDFriendlyName = $"{firstName} {lastName}",
+        otpServiceNameIndexes = new[] { 1 }
+    });
+
+    var postUrl = $"https://ra-preprod.bankidnorge.no/api/enduser/{personnummer}/bankid/netcentric";
+    var postContent = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+    var postResp = await http.PostAsync(postUrl, postContent);
+
+    if (!postResp.IsSuccessStatusCode)
+    {
+        Console.WriteLine($"✗ Registrering feilet: {(int)postResp.StatusCode}");
+    }
+    else
+    {
+        var pollUrl = $"https://ra-preprod.bankidnorge.no/api/enduser/{personnummer}/bankid/netcentric/0";
+        http.DefaultRequestHeaders.Add("cache-control", "no-cache");
+
+        bool activated = false;
+        for (int attempt = 1; attempt <= 5; attempt++)
+        {
+            Console.Write($"Sjekker status ({attempt}/5)...");
+            await Task.Delay(2000);
+            var pollResp = await http.GetAsync(pollUrl);
+            var json = await pollResp.Content.ReadAsStringAsync();
+            if (json.Contains("ACTIVATED", StringComparison.OrdinalIgnoreCase))
+            {
+                activated = true;
+                break;
+            }
+            Console.WriteLine(" venter...");
+        }
+
+        Console.WriteLine(activated
+            ? $"\n✓ BankID aktivert for {personnummer}"
+            : "\n✗ Aktivering ikke fullført etter 5 forsøk.");
+    }
+}
