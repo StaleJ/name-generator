@@ -91,7 +91,8 @@ if (Console.ReadLine()?.Trim().ToLowerInvariant() == "j")
     {
         commonName = $"{lastName}, {firstName}",
         bankIDFriendlyName = $"{firstName} {lastName}",
-        otpServiceNameIndexes = new[] { 1 }
+        otpServiceNameIndexes = new[] { 1 },
+        uspFirstTimeChange = false
     });
 
     var postUrl = $"https://ra-preprod.bankidnorge.no/api/enduser/{personnummer}/bankid/netcentric";
@@ -100,11 +101,23 @@ if (Console.ReadLine()?.Trim().ToLowerInvariant() == "j")
 
     if (!postResp.IsSuccessStatusCode)
     {
+        var error = await postResp.Content.ReadAsStringAsync();
         Console.WriteLine($"✗ Registrering feilet: {(int)postResp.StatusCode}");
+        if (!string.IsNullOrWhiteSpace(error))
+            Console.WriteLine(error);
     }
     else
     {
-        var pollUrl = $"https://ra-preprod.bankidnorge.no/api/enduser/{personnummer}/bankid/netcentric/0";
+        var postJson = await postResp.Content.ReadAsStringAsync();
+        using var created = JsonDocument.Parse(postJson);
+        if (!created.RootElement.TryGetProperty("index", out var indexElement) || !indexElement.TryGetInt32(out var bankIdIndex))
+        {
+            Console.WriteLine("✗ Registrering ga ikke BankID-index.");
+            Console.WriteLine(postJson);
+            return;
+        }
+
+        var pollUrl = $"https://ra-preprod.bankidnorge.no/api/enduser/{personnummer}/bankid/netcentric/{bankIdIndex}";
         http.DefaultRequestHeaders.Add("cache-control", "no-cache");
 
         bool activated = false;
@@ -114,7 +127,11 @@ if (Console.ReadLine()?.Trim().ToLowerInvariant() == "j")
             await Task.Delay(2000);
             var pollResp = await http.GetAsync(pollUrl);
             var json = await pollResp.Content.ReadAsStringAsync();
-            if (json.Contains("ACTIVATED", StringComparison.OrdinalIgnoreCase))
+            using var statusJson = JsonDocument.Parse(json);
+            var status = statusJson.RootElement.TryGetProperty("status", out var statusElement)
+                ? statusElement.GetString()
+                : null;
+            if (string.Equals(status, "Activated", StringComparison.OrdinalIgnoreCase))
             {
                 activated = true;
                 break;
